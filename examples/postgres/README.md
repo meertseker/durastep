@@ -1,7 +1,11 @@
 # Postgres store
 
 `PostgresStore` keeps sessions, runs and counters in three tables in your
-own database. It needs `pg` (an optional peer dependency):
+own database. A fourth table, `durastep_jobs`, is the optional Postgres job
+queue (`PostgresDispatcher` + `startPostgresWorker`); a complete Postgres-only
+setup is in [examples/postgres-only](../postgres-only/README.md).
+
+It needs `pg` (an optional peer dependency):
 
 ```sh
 npm install durastep pg
@@ -35,6 +39,7 @@ Tables created:
 | `durastep_sessions` | one row per chain instance; `plan` is jsonb, `version` is the optimistic lock              |
 | `durastep_runs`     | one row per worker execution; `UNIQUE (tenant_id, idempotency_key)` is the duplicate guard |
 | `durastep_counters` | monthly usage counters read by the quota policies                                          |
+| `durastep_jobs`     | the Postgres job queue; unused if you dispatch through BullMQ                              |
 
 ## 2. Swap the store
 
@@ -47,7 +52,7 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 const runtime = createRuntime({
   store: new PostgresStore({ pool }),
-  dispatcher: new InlineDispatcher(), // or BullMQDispatcher, see ../bullmq
+  dispatcher: new InlineDispatcher(), // or PostgresDispatcher (../postgres-only), or BullMQDispatcher (../bullmq)
   registry,
 });
 ```
@@ -66,9 +71,11 @@ its own pool (closed by `store.close()`).
 - **Pool size.** Each concurrent `advance()` holds one extra connection for the
   duration of the lock. Size the pool for worker concurrency + advance
   concurrency.
-- **Retention.** durastep never deletes rows. Delete old sessions with
+- **Retention.** durastep never deletes session or run rows (the job queue deletes
+  finished jobs; dead jobs stay). Delete old sessions with
   `DELETE FROM durastep_sessions WHERE status IN ('COMPLETED','FAILED','CANCELLED') AND updated_at < now() - interval '30 days'`
   (runs cascade).
 - **Running the adapter tests.** `DATABASE_URL=postgres://... npm test` runs the
   shared store contract suite and an end-to-end chain against your database.
-  They are skipped when `DATABASE_URL` is unset.
+  It also runs the Postgres queue suite (`test/postgres-queue.test.ts`). They are
+  skipped when `DATABASE_URL` is unset.
