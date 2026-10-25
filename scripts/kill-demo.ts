@@ -147,6 +147,9 @@ function log(msg: string) {
   console.log(`[parent] ${msg}`);
 }
 
+const color = process.stdout.isTTY === true && !process.env.NO_COLOR;
+const paint = (code: number, text: string) => (color ? `\x1b[${code}m${text}\x1b[0m` : text);
+
 function spawnWorker(label: string, url: string): ChildProcess {
   const script = fileURLToPath(import.meta.url);
   // Run node directly (not through npx / a shell), so SIGKILL hits the worker itself.
@@ -281,7 +284,7 @@ async function parent(): Promise<number> {
       await sleep(50);
     }
     log(`"${before}" has succeeded; "${killStep}" is mid-execution (attempt 1)`);
-    log(`kill -9 worker pid=${first.pid}`);
+    log(paint(31, `kill -9 worker pid=${first.pid}`));
     const exited = new Promise((r) => first.once("exit", r));
     first.kill("SIGKILL");
     await exited;
@@ -373,7 +376,9 @@ async function parent(): Promise<number> {
       ],
     ];
     console.log("");
-    for (const [ok, text] of checks) console.log(`${ok ? "[ok]  " : "[FAIL]"} ${text}`);
+    for (const [ok, text] of checks) {
+      console.log(`${ok ? paint(32, "[ok]  ") : paint(31, "[FAIL]")} ${text}`);
+    }
     console.log("");
     for (const line of [
       `The retry of "${killStep}" is at-least-once delivery: its job's lease expired and worker 2`,
