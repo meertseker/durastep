@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import pg from "pg";
 import { afterAll, describe, expect, expectTypeOf, it } from "vitest";
 import { chain, registry } from "../examples/basic/pipeline";
@@ -19,6 +20,11 @@ describe("durastep/postgres without a database", () => {
       expect(SCHEMA_SQL).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
     }
     expect(SCHEMA_SQL).toMatch(/UNIQUE \(tenant_id, idempotency_key\)/);
+  });
+
+  it("inlines exactly the shipped schema.sql", () => {
+    const file = readFileSync(new URL("../src/store/postgres/schema.sql", import.meta.url), "utf8");
+    expect(SCHEMA_SQL).toBe(file);
   });
 
   it("hashes session ids into stable signed 32-bit lock keys", () => {
