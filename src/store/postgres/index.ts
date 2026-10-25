@@ -1,5 +1,5 @@
 /**
- * PostgreSQL store for durastep. Import from `durastep/postgres`.
+ * PostgreSQL store and job queue for durastep. Import from `durastep/postgres`.
  *
  * `pg` is an optional peer dependency: this module never imports it at
  * load time. Pass your own `pg.Pool` (or anything with the same `query` /
@@ -399,3 +399,5 @@ export class PostgresStore implements Store {
     return rows[0] ? Number((rows[0] as { value: unknown }).value) : 0;
   }
 }
+
+export * from "../../queue/postgres/index";
