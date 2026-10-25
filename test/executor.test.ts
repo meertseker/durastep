@@ -235,6 +235,27 @@ describe("executeRun: failures", () => {
   });
 });
 
+describe("executeRun: re-delivery", () => {
+  it("re-runs a retry-pending FAILED run that is re-delivered without isRetry", async () => {
+    impl.mockRejectedValueOnce(new RetryableError("flake")).mockResolvedValueOnce({ ok: 1 });
+    const runId = await scheduledRun();
+    const deps = depsFor(makeWorker());
+    await expect(executeRun(deps, runId)).rejects.toThrow("flake");
+    // The process died after marking the run; the queue re-delivered the job
+    // as if it were the same attempt.
+    expect(await executeRun(deps, runId)).toMatchObject({ outcome: "succeeded" });
+    expect((await store.getRun(runId))?.attempt).toBe(2);
+  });
+
+  it("re-runs a RUNNING run re-delivered after a stalled worker (at-least-once)", async () => {
+    const runId = await scheduledRun();
+    await store.updateRun(runId, { status: "RUNNING", attempt: 1, startedAt: new Date() });
+    expect(await executeRun(depsFor(makeWorker()), runId)).toMatchObject({ outcome: "succeeded" });
+    expect(impl).toHaveBeenCalledTimes(1);
+    expect((await store.getRun(runId))?.attempt).toBe(2);
+  });
+});
+
 describe("executeRun: deferral", () => {
   it("puts the run back to PENDING with deferCount + 1 and returns the delay", async () => {
     impl.mockRejectedValue(new DeferError(20_000));

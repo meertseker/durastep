@@ -70,6 +70,22 @@ export interface ExpireOptions {
   limit?: number;
   /** Only this tenant's runs. */
   tenantId?: string;
+  /**
+   * A PENDING run that never started is re-dispatched when the watchdog
+   * expires it, until it is this old (from creation); then it is failed.
+   * Default 30 minutes.
+   */
+  maxPendingMs?: number;
+}
+
+/** Result of `expireStuckRuns`. */
+export interface ExpireResult {
+  /** Number of runs marked FAILED. */
+  expired: number;
+  /** Ids of the runs marked FAILED. */
+  runIds: string[];
+  /** Ids of never-started PENDING runs that were dispatched again. */
+  redispatched: string[];
 }
 
 /** The durastep runtime: the public entry points bound to a store and dispatcher. */
@@ -109,11 +125,12 @@ export interface Runtime<W extends AnyWorker = AnyWorker> {
     options?: RecoverOptions,
   ): Promise<{ recovered: number; sessionIds: string[] }>;
   /**
-   * Marks PENDING / RUNNING runs that the watchdog declares dead as FAILED
-   * (and FAILED runs whose retry never arrived as finally FAILED), then
-   * advances their sessions. Safe to run on a timer from every process.
+   * Applies the watchdog to PENDING, RUNNING and retry-pending runs. Dead
+   * runs that started are marked FAILED and their sessions advanced; dead
+   * PENDING runs that never started are dispatched again (until
+   * `maxPendingMs`). Safe to run on a timer from every process.
    */
-  expireStuckRuns(options?: ExpireOptions): Promise<{ expired: number; runIds: string[] }>;
+  expireStuckRuns(options?: ExpireOptions): Promise<ExpireResult>;
   /** Loads a session. */
   getSession(sessionId: string): Promise<Session | null>;
   /** Lists a session's runs, oldest first. */
@@ -234,7 +251,13 @@ export function createRuntime<W extends AnyWorker>(options: RuntimeOptions<W>): 
         sessionId: session.id,
         status: ["PENDING", "RUNNING", "FAILED"],
       });
-      const inFlight = runs.some((r) => r.status !== "FAILED" || isRetryPending(r));
+      // Only runs the plan references count. A PENDING run the plan does not
+      // reference was left by an advance that died before persisting; the
+      // re-advance adopts and dispatches it through its idempotency key.
+      const referenced = new Set(session.plan.flatMap((s) => (s.runId ? [s.runId] : [])));
+      const inFlight = runs.some(
+        (r) => referenced.has(r.id) && (r.status !== "FAILED" || isRetryPending(r)),
+      );
       if (inFlight) continue;
       try {
         await dispatcher.enqueueAdvance(session.id);
@@ -252,7 +275,7 @@ export function createRuntime<W extends AnyWorker>(options: RuntimeOptions<W>): 
     return { recovered: sessionIds.length, sessionIds };
   }
 
-  async function expireStuckRuns(opts: ExpireOptions = {}) {
+  async function expireStuckRuns(opts: ExpireOptions = {}): Promise<ExpireResult> {
     const at = opts.now ?? now();
     const scope = opts.tenantId ? { tenantId: opts.tenantId } : {};
     const limit = opts.limit ?? 500;
@@ -260,7 +283,9 @@ export function createRuntime<W extends AnyWorker>(options: RuntimeOptions<W>): 
     const retrying = (await store.listRuns({ status: ["FAILED"], limit, ...scope })).filter(
       isRetryPending,
     );
+    const maxPendingMs = opts.maxPendingMs ?? 30 * 60_000;
     const runIds: string[] = [];
+    const redispatched: string[] = [];
     const sessions = new Set<string>();
     for (const run of [...live, ...retrying]) {
       const verdict = watchdogVerdict(
@@ -269,6 +294,25 @@ export function createRuntime<W extends AnyWorker>(options: RuntimeOptions<W>): 
         at.getTime(),
       );
       if (!verdict.expired) continue;
+      // A PENDING run that never started was most likely never delivered (the
+      // enqueue failed or the job was lost). Nothing ran, so re-dispatching is
+      // safe; the deferredAt bump restarts the watchdog clock. Give up and fail
+      // it once it is older than maxPendingMs.
+      const neverStarted = run.status === "PENDING" && run.startedAt === null;
+      if (neverStarted && at.getTime() - run.createdAt.getTime() < maxPendingMs) {
+        const bumped = await store.updateRun(run.id, { deferredAt: at }, { ifStatus: ["PENDING"] });
+        if (!bumped) continue;
+        try {
+          await dispatcher.enqueueRun(run.id);
+          redispatched.push(run.id);
+        } catch (err) {
+          logger.error("durastep.expire.redispatch_failed", {
+            runId: run.id,
+            err: errorMessage(err),
+          });
+        }
+        continue;
+      }
       const updated = await store.updateRun(
         run.id,
         {
@@ -289,8 +333,13 @@ export function createRuntime<W extends AnyWorker>(options: RuntimeOptions<W>): 
         logger.error("durastep.expire.enqueue_failed", { sessionId, err: errorMessage(err) });
       }
     }
-    if (runIds.length > 0) logger.warn("durastep.expire.runs", { expired: runIds.length });
-    return { expired: runIds.length, runIds };
+    if (runIds.length > 0 || redispatched.length > 0) {
+      logger.warn("durastep.expire.runs", {
+        expired: runIds.length,
+        redispatched: redispatched.length,
+      });
+    }
+    return { expired: runIds.length, runIds, redispatched };
   }
 
   const runtime: Runtime<W> = {

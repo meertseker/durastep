@@ -57,6 +57,7 @@ export { createRegistry, defineWorker, type Registry, type WorkersOf } from "./c
 export {
   createRuntime,
   type ExpireOptions,
+  type ExpireResult,
   type RecoverOptions,
   type Runtime,
   type RuntimeOptions,
