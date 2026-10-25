@@ -18,7 +18,6 @@ export default defineConfig({
   splitting: true,
   treeshake: true,
   external: ["pg", "bullmq", "ioredis"],
-  loader: { ".sql": "text" },
   async onSuccess() {
     await mkdir("dist/postgres", { recursive: true });
     await copyFile("src/store/postgres/schema.sql", "dist/postgres/schema.sql");

@@ -18,10 +18,9 @@ import type {
   SessionFilter,
   Store,
 } from "../types";
-import schemaSql from "./schema.sql";
+import { SCHEMA_SQL } from "./schema";
 
-/** The DDL shipped as `durastep/postgres/schema.sql`. Idempotent. */
-export const SCHEMA_SQL: string = schemaSql;
+export { SCHEMA_SQL };
 
 /** Result shape of a query, compatible with `pg`. */
 export interface PgQueryResult {
