@@ -63,3 +63,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run example:bullmq
+      - run: npm run example:postgres
+      - name: kill -9 demo
+        run: npm run demo:kill
+        timeout-minutes: 2
