@@ -82,6 +82,7 @@
     "example": "tsx examples/basic/index.ts",
     "example:bullmq": "tsx examples/bullmq/index.ts",
     "example:postgres": "tsx examples/postgres-only/index.ts",
+    "demo:kill": "tsx scripts/kill-demo.ts",
     "prepublishOnly": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "peerDependencies": {
