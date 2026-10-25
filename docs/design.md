@@ -2,10 +2,11 @@
 
 ## Goal
 
-Give TypeScript teams that already run Postgres and Redis the hard parts of
+Give TypeScript teams that already run Postgres the hard parts of
 multi-step agent pipelines (typed workers, DAG chains, race-safe scheduling,
 an error taxonomy, deadlines, quotas, recovery) as a library with no runtime
-dependencies, instead of a platform to adopt.
+dependencies, instead of a platform to adopt. One Postgres is enough; Redis
+(through BullMQ) is optional.
 
 ## Shape
 
@@ -14,11 +15,12 @@ src/
   core/      types, errors, idempotency, registry, chain, deadline, quota,
              orchestrator (advance), executor (executeRun), runtime, logger
   store/     Store interface, MemoryStore, postgres/ (PostgresStore, schema.sql)
-  queue/     Dispatcher interface, InlineDispatcher, bullmq/ (dispatcher + worker)
+  queue/     Dispatcher interface, InlineDispatcher, postgres/ (dispatcher + worker
+             on durastep_jobs), bullmq/ (dispatcher + worker)
 ```
 
 Three entry points: `durastep` (core + in-memory implementations),
-`durastep/postgres` and `durastep/bullmq`. `pg`, `bullmq` and `ioredis` are
+`durastep/postgres` (store and job queue) and `durastep/bullmq`. `pg`, `bullmq` and `ioredis` are
 optional peer dependencies, loaded only by their adapters. The build uses
 shared chunks so all entry points share one copy of the core; the error
 classes also carry a string brand so `isRetryableError` and friends work
@@ -150,3 +152,74 @@ The spec left these open or was ambiguous; this is what was chosen and why.
 21. **MemoryStore deep-copies** on every read and write (`structuredClone`) so
     it behaves like a database, not like shared mutable state.
 22. **Cycle errors name the path** (`Cycle detected: a -> c -> b -> a`).
+
+## Decisions made while adding the Postgres queue
+
+The Postgres-only queue (`PostgresDispatcher`, `startPostgresWorker`), its
+example and the kill -9 demo were built after the first release. These are
+the choices made on the way, and why.
+
+23. **Same entry point, no new dependency.** The queue lives in
+    `src/queue/postgres/` and is re-exported from `durastep/postgres`, next to
+    `PostgresStore`. It needs only `pg` (already an optional peer) and types
+    the pool structurally like the store does. Its table is appended to the
+    shipped `schema.sql`, so `applySchema` creates four tables.
+24. **`startPostgresWorker` takes one options object** that includes the
+    runtime (`{ pool, runtime, ... }`), unlike `startBullMQWorker(runtime,
+    options)`: the pool is as central as the runtime here, and an object
+    reads better at the call site.
+25. **Backoff is stored on the job row** (`backoff_type`, `backoff_ms`,
+    `backoff_max_ms`), not configured on the worker. Producers decide
+    attempts and backoff, as BullMQ job options do, and every worker applies
+    the same policy. Three columns beyond the original table sketch; the
+    default cap is 5 minutes.
+26. **Coalescing pulls the pending row forward.** A duplicate enqueue uses
+    `ON CONFLICT ... DO UPDATE SET run_at = LEAST(run_at, now())` instead of
+    `DO NOTHING`, so a fresh trigger is not stuck behind a pending row's
+    backoff delay. It also returns the row, so the notification fires.
+27. **A re-queue that would collide with a pending duplicate drops itself.**
+    A job that fails while the same work was enqueued again would violate the
+    partial unique index when going back to `queued`; the worker deletes its
+    own row instead (the pending row does the work) and logs
+    `durastep.pg.job_coalesced`.
+28. **Claiming is one statement**: `UPDATE ... FROM (SELECT ... FOR UPDATE
+    SKIP LOCKED LIMIT n)`, which is its own short transaction. Nothing is held
+    while user code runs.
+29. **Crash loops end without a reaper.** A job claimed again after the lease
+    of its final attempt expired arrives with `attempts > max_attempts` and is
+    marked `dead` without running. No separate sweep query is needed.
+30. **A locked advance is retried like an error and spends an attempt**, as
+    in the BullMQ adapter. Refunding it would risk an endless loop if a lock
+    were never released; if retries run out, recovery re-advances the
+    session.
+31. **Notifications carry the queue name** and workers ignore other queues.
+    A worker also sets a local timer for jobs it re-queues with a delay, so a
+    short backoff does not wait for the next poll.
+32. **The worker runs recovery** (`expireStuckRuns` + `recoverStuckSessions`
+    every 60 s) unless `recovery: false`, matching `startBullMQWorker`.
+33. **`close()` stops heartbeats when the shutdown timeout passes**, so jobs
+    still running in a closing process lose their lease and move to another
+    worker instead of being extended forever.
+34. **`applySchema` takes a transaction-level advisory lock.** Running two
+    test files in parallel showed that concurrent `CREATE TABLE IF NOT EXISTS`
+    can fail with a duplicate-key error in the catalog. Multi-statement simple
+    queries run as one implicit transaction, so the lock covers the whole
+    schema.
+35. **The listener uses a pooled connection** (released with `release(true)`
+    so a `LISTEN`ing connection never goes back to the pool) and reconnects
+    with backoff from 1 s to 30 s. `listen: false` turns it off for PgBouncer
+    in transaction mode.
+36. **Kill demo details.** The worker child is started as `node` with tsx's
+    loader flags (`process.execArgv`), not through `npx`, so SIGKILL
+    (TerminateProcess on Windows) hits the worker and not a wrapper. A step's
+    `start` row is written in the step body; its `success` row is written by
+    the telemetry hook, which fires after the SUCCEEDED write, so "succeeded"
+    means durable. The ledger has `session_id` and `pid` columns beyond the
+    original sketch, to filter by run and to show which worker ran what. The
+    demo clears leftover jobs of its own queue (`durastep-kill-demo`) at start.
+    The second worker is stopped over IPC so it closes gracefully on every
+    platform. The steps are sequential so the kill point is unambiguous.
+37. **The GIF is rendered with vhs in Docker** (the official vhs image with
+    Node 22 copied in), against the same Postgres container, because vhs,
+    ttyd and ffmpeg are not available on the Windows host. See
+    [kill-demo.md](./kill-demo.md).

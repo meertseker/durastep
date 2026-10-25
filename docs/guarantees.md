@@ -2,9 +2,14 @@
 
 This page states what durastep guarantees, what it does not, and what happens
 when a process dies at each point in a run's lifecycle. It assumes the
-production setup: `PostgresStore` + `BullMQDispatcher`, with recovery
-(`expireStuckRuns` + `recoverStuckSessions`) running periodically, which
-`startBullMQWorker` does by default every 60 s.
+production setup: `PostgresStore` with `PostgresDispatcher` (or
+`BullMQDispatcher`), with recovery (`expireStuckRuns` +
+`recoverStuckSessions`) running periodically, which `startPostgresWorker` and
+`startBullMQWorker` do by default every 60 s.
+
+The Postgres queue's own delivery rules are in
+[The Postgres queue](#the-postgres-queue) below; the lifecycle walk-through
+after it applies to both queues.
 
 ## Summary
 
@@ -12,8 +17,9 @@ production setup: `PostgresStore` + `BullMQDispatcher`, with recovery
 | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | At most one run row per (session, step)                                  | **Yes.** Enforced by the unique `(tenant_id, idempotency_key)` constraint, not by the lock.                                                    |
 | A step is scheduled only after its dependencies are SUCCEEDED or SKIPPED | **Yes.** Decided from persisted run status, inside the session lock, behind a version check.                                                   |
-| A scheduled run is executed at least once                                | **Yes**, given a dispatcher that delivers at least once (BullMQ does) and recovery running.                                                    |
+| A scheduled run is executed at least once                                | **Yes**, given a dispatcher that delivers at least once (the Postgres queue and BullMQ do) and recovery running.                               |
 | A run is executed at most once                                           | **No.** A worker can run more than once for the same run id. See "Duplicate execution".                                                        |
+| A SUCCEEDED run is executed again                                        | **No.** `executeRun` only executes PENDING, RUNNING and retry-pending FAILED runs; a re-delivered job for a SUCCEEDED run is a no-op.          |
 | Exactly-once side effects                                                | **No.** durastep cannot make your external calls exactly-once. Make them idempotent.                                                           |
 | Every session eventually reaches COMPLETED or FAILED                     | **Yes**, given recovery runs and the store is reachable.                                                                                       |
 | Quotas and cost ceilings are hard limits                                 | **No.** They are checked before an attempt and counted after success; concurrent runs can overshoot by the number of runs in flight.           |
@@ -45,6 +51,8 @@ A run's worker can execute more than once when:
 - a BullMQ worker stalls (crash, OOM, event loop blocked past the job lock)
   and BullMQ re-delivers the job: `executeRun` accepts a RUNNING run and
   starts a new attempt;
+- a Postgres queue worker dies or stalls past its lease (`leaseMs`) and
+  another worker claims the job: the same thing, as the kill -9 demo shows;
 - the outer deadline fires but the worker ignores `ctx.signal`: the attempt
   is marked failed and retried while the first attempt may still be running;
 - the watchdog expires a run that was in fact alive (a worker slower than its
@@ -55,11 +63,120 @@ So: treat `ctx.runId` (stable across attempts) as the idempotency key for
 anything external (payments, emails, CRM writes, paid API calls), and honour
 `ctx.signal`.
 
+## The Postgres queue
+
+`PostgresDispatcher` inserts rows into `durastep_jobs`; `startPostgresWorker`
+claims and executes them. Its rules:
+
+- **At-least-once delivery.** A job row is deleted only after its handler
+  returned and the completion write succeeded. If the worker dies anywhere
+  before that, the row stays `running` until its lease passes, then any worker
+  claims it again.
+- **Lease (visibility timeout).** A claim sets `locked_until = now() +
+  leaseMs` (default 30 s). While the job runs, a heartbeat every `heartbeatMs`
+  (default `leaseMs / 3`) extends it. A `running` row whose lease passed is
+  claimable exactly like a due `queued` row. So a crashed worker's job is
+  picked up within `leaseMs` of its last heartbeat. Lease times use the
+  database clock (`now()`), never the worker's.
+- **Claiming.** One statement selects due rows `FOR UPDATE SKIP LOCKED`,
+  marks them `running` and commits. No transaction or row lock is held while
+  user code runs. Two workers never hold a valid lease on the same row at the
+  same time.
+- **Attempts count at claim.** `attempts` is incremented when a job is
+  claimed, so an attempt that crashed its worker counts. A job claimed again
+  after its final attempt's lease expired (it kept killing its worker) is
+  marked `dead` without running.
+- **Retries.** A retryable error re-queues the job with the row's backoff
+  (default exponential from 2 s, capped at 5 minutes) until `max_attempts`
+  (default 3), then marks it `dead`. `executeRun` gets `isRetry: attempts > 1`
+  and `finalAttempt: attempts >= max_attempts`, as with BullMQ; on the final
+  attempt the executor finalises a retryable failure itself (run FAILED,
+  session advanced), so a run job usually ends deleted, not dead.
+- **Defer does not spend an attempt.** A `DeferError` re-queues the job after
+  the requested delay with its attempt refunded.
+- **Permanent errors end `dead`** with `last_error` kept, and are not
+  retried. Dead rows stay in the table for inspection until you delete them.
+- **Completion is guarded** by `locked_by` and the claimed attempt number. A
+  worker that lost its lease (another worker re-claimed the job) cannot
+  delete, re-queue or kill the new owner's row; it logs
+  `durastep.pg.lease_lost` instead. Heartbeats are guarded the same way, so a
+  late worker cannot extend a lease it no longer holds.
+- **Coalescing.** At most one `queued` row exists per (queue, kind, ref): a
+  duplicate enqueue of the same pending work merges into it and moves its due
+  time to the earlier of the two. A job that is already `running` is not
+  merged into: the new enqueue gets its own row, because the running handler
+  may have read state before the new trigger. If a failing job would be
+  re-queued while such a row is pending, it is dropped in favour of that row.
+- **Notifications are hints.** `LISTEN durastep_jobs` only shortens latency;
+  polling (`pollIntervalMs`) guarantees progress when notifications are lost
+  or `listen: false`.
+- **Transactional enqueue.** `dispatcher.withClient(client)` inserts through
+  your client: the job exists, and the notification fires, only if your
+  transaction commits.
+
+### How it composes with the idempotency key and the plan version
+
+The queue only decides *when* `executeRun` and `advance` are called, and it
+may call them more than once. What makes repeats safe is the layer above:
+
+- A re-delivered `run` job calls `executeRun` on the same run row. A run that
+  already SUCCEEDED (or failed for good) is not executed again. A RUNNING run,
+  left by a worker that died mid-step, is executed again as the next attempt.
+- A re-delivered or duplicated `advance` job cannot create a second run for a
+  step: the `(tenant_id, idempotency_key)` constraint returns the existing
+  row, and a writer with a stale plan loses the version check and dispatches
+  nothing.
+- So a crash costs at most the interrupted attempt of the steps that were
+  running, plus some no-op deliveries; finished steps stay finished.
+
+### What the kill -9 demo shows
+
+`npm run demo:kill` ([docs/kill-demo.md](./kill-demo.md)) kills a worker
+process with SIGKILL while step 3 of 5 is running and starts a fresh worker.
+It checks, from a ledger written by the steps and from the durastep tables,
+that the session completes, that every step succeeded exactly once, that the
+steps that had completed before the kill never started again, and that the
+interrupted step started twice (attempt 1 killed, attempt 2 succeeded). In
+short: **no completed step ran twice; the interrupted step was retried once.**
+
+It covers one crash point (during a step) with one worker per process. The
+other crash points are walked through below. It does not show exactly-once
+side effects, because there are none: the killed attempt of step 3 had
+already started its work.
+
+### Limits
+
+- **Side effects must be idempotent.** An interrupted attempt may have done
+  part of its work (sent the email, charged the card) before dying, and the
+  retry does it again unless you key it on `ctx.runId`.
+- **A lease that is too short causes concurrent duplicates.** If a job runs
+  without a heartbeat for longer than `leaseMs` (an event loop blocked by CPU
+  work, a long GC pause, a network partition from the database), another
+  worker claims it while the first is still executing. Both attempts run. The
+  run status only partly guards this: an execution that starts after the run
+  reached SUCCEEDED is a no-op, but two overlapping attempts both run to the
+  end, and the later SUCCEEDED write wins. The stale worker's completion is
+  rejected by the guard. Keep `leaseMs` well above your worst pause, and let
+  heartbeats do the work.
+- **A crash-looping run job ends `dead` while its run is RUNNING.** The
+  watchdog in `expireStuckRuns` fails that run later and advances the session.
+- **Throughput.** Each job costs a few small queries (claim, heartbeats,
+  delete) and the table churns, so autovacuum matters. This suits pipeline
+  steps that take seconds; for very high job rates of tiny jobs, BullMQ on
+  Redis is the better transport.
+- **PgBouncer.** `LISTEN` needs a session connection: use `listen: false` in
+  transaction pooling mode (the session lock has the same caveat; see
+  examples/postgres).
+
 ## Process dies at point X
 
 The lifecycle of one step, and what happens if the process doing the work
 dies right after each point. "Recovery" means the periodic
-`expireStuckRuns` + `recoverStuckSessions`.
+`expireStuckRuns` + `recoverStuckSessions`. The text uses BullMQ's terms;
+with the Postgres queue, "BullMQ re-delivers the stalled job" reads "the
+job's lease expires and another worker claims it", "Redis down" reads
+"Postgres down" (in which case the store is down too and nothing progresses
+until it is back), and a job whose retries ran out is kept as `dead`.
 
 ### Starting a session
 
@@ -137,7 +254,7 @@ key and the version check prevent double scheduling.
 
 ## What recovery needs from you
 
-- Run `startBullMQWorker` (recovery on by default) or call
+- Run `startPostgresWorker` or `startBullMQWorker` (recovery on by default) or call
   `runtime.expireStuckRuns()` and `runtime.recoverStuckSessions()` on a timer.
 - Declare `deadlineMs` on workers that legitimately run longer than three
   minutes, otherwise the watchdog will expire them.

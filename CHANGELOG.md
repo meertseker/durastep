@@ -7,6 +7,32 @@ contain breaking changes; they will be called out here.
 
 ## [Unreleased]
 
+### Added
+
+- `durastep/postgres`: a Postgres-only job queue. `PostgresDispatcher`
+  inserts jobs into the new `durastep_jobs` table (with `pg_notify`,
+  coalescing of duplicate pending work, and `withClient` for enqueueing
+  inside your transaction); `startPostgresWorker` claims them with
+  `FOR UPDATE SKIP LOCKED`, holds a lease with heartbeats, retries with
+  backoff, keeps permanently failed jobs as `dead`, wakes on
+  `LISTEN durastep_jobs` with polling as the fallback, runs recovery, and
+  closes gracefully. Also exported: `backoffDelay`, `planCompletion`,
+  `processClaimedJob`, `SCHEMA_LOCK_KEY`.
+- `examples/postgres-only` and `npm run example:postgres`: the example chain
+  on one `DATABASE_URL`.
+- `npm run demo:kill` (`scripts/kill-demo.ts`): SIGKILLs a worker mid-step,
+  finishes on a fresh worker, and checks that no completed step ran twice.
+  `assets/kill-demo.gif` and `scripts/kill-demo.tape`.
+
+### Changed
+
+- `schema.sql` / `SCHEMA_SQL` add the `durastep_jobs` table and its indexes.
+  Re-run `applySchema` (or the SQL) when upgrading; it is idempotent.
+- `applySchema` holds a transaction-level advisory lock, so processes booting
+  at the same time no longer race `CREATE ... IF NOT EXISTS`.
+- The README leads with the Postgres-only setup; BullMQ is the optional second
+  dispatcher.
+
 ## [0.1.0] - 2026-10-25
 
 ### Added

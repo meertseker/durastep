@@ -3,6 +3,11 @@
 Directional, not a promise. Items move up when someone needs them in
 production; open an issue describing your case.
 
+## Done since 0.1 (unreleased)
+
+- **Postgres-only job queue.** `PostgresDispatcher` + `startPostgresWorker`:
+  one Postgres, no Redis. See docs/guarantees.md.
+
 ## Next (0.2)
 
 - **Cancel a session.** `runtime.cancelSession(id)`: mark it CANCELLED, mark
@@ -20,8 +25,9 @@ production; open an issue describing your case.
 - Hard quotas with reservation (check-and-increment in one statement) for
   teams that cannot tolerate overshoot.
 - A retention helper for old sessions and runs.
-- Additional stores (SQLite for single-node deployments) and dispatchers
-  (pg-boss for Postgres-only shops).
+- Additional stores (SQLite for single-node deployments).
+- Postgres queue tooling: re-queue or purge dead jobs, queue depth and
+  oldest-job age for metrics, an optional cleanup of old dead jobs.
 - A read-only CLI to inspect sessions and runs.
 
 ## Not planned
