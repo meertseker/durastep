@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose a change or addition
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do in your pipeline, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The API or behaviour you have in mind.
+  - type: textarea
+    id: guarantees
+    attributes:
+      label: Effect on guarantees
+      description: Does this change what happens on crashes, retries or concurrency? See docs/guarantees.md.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
