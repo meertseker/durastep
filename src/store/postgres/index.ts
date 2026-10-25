@@ -81,12 +81,23 @@ export function sessionLockKey(sessionId: string): number {
 }
 
 /**
- * Applies `SCHEMA_SQL`. Idempotent; run it from a migration or on boot.
+ * Key of the transaction-level advisory lock `applySchema` holds, so that
+ * processes booting at the same time do not race `CREATE ... IF NOT EXISTS`
+ * (which can fail with a duplicate-key error under concurrency). The
+ * single-bigint key space does not overlap the two-int4 session locks.
+ */
+export const SCHEMA_LOCK_KEY = 0x44535453;
+
+/**
+ * Applies `SCHEMA_SQL`. Idempotent and safe to call from several processes
+ * at once; run it from a migration or on boot.
  *
  * @param db - a pool or client.
  */
 export async function applySchema(db: PgQueryable): Promise<void> {
-  await db.query(SCHEMA_SQL);
+  // A multi-statement simple query runs as one implicit transaction, so the
+  // xact lock is held until the whole schema is applied.
+  await db.query(`SELECT pg_advisory_xact_lock(${SCHEMA_LOCK_KEY});\n${SCHEMA_SQL}`);
 }
 
 type Row = Record<string, unknown>;

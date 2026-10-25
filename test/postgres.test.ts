@@ -15,8 +15,13 @@ import { runStoreContract } from "./store-contract";
 const url = process.env.DATABASE_URL;
 
 describe("durastep/postgres without a database", () => {
-  it("ships a schema with the three tables and the idempotency constraint", () => {
-    for (const table of ["durastep_sessions", "durastep_runs", "durastep_counters"]) {
+  it("ships a schema with the four tables and the idempotency constraint", () => {
+    for (const table of [
+      "durastep_sessions",
+      "durastep_runs",
+      "durastep_counters",
+      "durastep_jobs",
+    ]) {
       expect(SCHEMA_SQL).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
     }
     expect(SCHEMA_SQL).toMatch(/UNIQUE \(tenant_id, idempotency_key\)/);
