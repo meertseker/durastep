@@ -1,0 +1,45 @@
+name: Bug report
+description: Something does not behave as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: A minimal script or failing test, ideally with MemoryStore + InlineDispatcher.
+      render: ts
+    validations:
+      required: true
+  - type: dropdown
+    id: setup
+    attributes:
+      label: Store and dispatcher
+      multiple: true
+      options:
+        - MemoryStore
+        - PostgresStore
+        - custom Store
+        - InlineDispatcher
+        - BullMQDispatcher
+        - custom Dispatcher
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: durastep, Node, and pg / bullmq if used
+      placeholder: durastep 0.1.0, Node 22.11, bullmq 5.x
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant rows or logs
+      description: Session plan / run rows (redact inputs) and durastep log lines.
+      render: text
