@@ -143,10 +143,11 @@ interface Dispatcher {
 }
 ```
 
-|            | development        | production                                                   |
-| ---------- | ------------------ | ------------------------------------------------------------ |
-| store      | `MemoryStore`      | `PostgresStore` (`durastep/postgres`)                        |
-| dispatcher | `InlineDispatcher` | `BullMQDispatcher` + `startBullMQWorker` (`durastep/bullmq`) |
+|            | development        | production                                                                                     |
+| ---------- | ------------------ | ---------------------------------------------------------------------------------------------- |
+| store      | `MemoryStore`      | `PostgresStore` (`durastep/postgres`)                                                          |
+| dispatcher | `InlineDispatcher` | `PostgresDispatcher` + `startPostgresWorker` (`durastep/postgres`), no Redis                   |
+|            |                    | or `BullMQDispatcher` + `startBullMQWorker` (`durastep/bullmq`), if you already run Redis      |
 
 ## Recovery
 

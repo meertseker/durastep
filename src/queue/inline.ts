@@ -23,7 +23,7 @@ const sleep = (ms: number) =>
  * throw `DeferError` fail), because nothing would re-deliver them.
  *
  * For development, tests and scripts. Nothing survives a process exit; use
- * `BullMQDispatcher` in production.
+ * `PostgresDispatcher` (or `BullMQDispatcher`) in production.
  */
 export class InlineDispatcher implements Dispatcher {
   private handlers: RuntimeHandlers | undefined;

@@ -24,7 +24,7 @@ import type {
 export interface RuntimeOptions<W extends AnyWorker = AnyWorker> {
   /** Persistence: `MemoryStore`, `PostgresStore` or your own. */
   store: Store;
-  /** Work transport: `InlineDispatcher`, `BullMQDispatcher` or your own. */
+  /** Work transport: `InlineDispatcher`, `PostgresDispatcher`, `BullMQDispatcher` or your own. */
   dispatcher: Dispatcher;
   /** The workers this runtime can execute. */
   registry: Registry<W>;

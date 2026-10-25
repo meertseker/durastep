@@ -14,12 +14,14 @@ npm test          # needs nothing but Node 20+
 npm run example   # in-memory end-to-end run
 ```
 
-Optional adapter suites:
+Optional adapter suites (Postgres store and queue; BullMQ needs Redis too):
 
 ```sh
 docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=pw postgres:16-alpine
 docker run --rm -d -p 6379:6379 redis:7-alpine
 DATABASE_URL=postgres://postgres:pw@localhost:5432/postgres REDIS_URL=redis://localhost:6379 npm test
+DATABASE_URL=postgres://postgres:pw@localhost:5432/postgres npm run example:postgres
+DATABASE_URL=postgres://postgres:pw@localhost:5432/postgres npm run demo:kill
 ```
 
 ## Before you open a pull request

@@ -1,6 +1,6 @@
 /**
  * durastep: durable, idempotent multi-step agent pipelines on your own
- * Postgres and Redis. A library, not a platform.
+ * Postgres. No Redis required, no platform: a library.
  *
  * @packageDocumentation
  */

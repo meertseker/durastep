@@ -1,7 +1,7 @@
 {
   "name": "durastep",
   "version": "0.1.0",
-  "description": "Durable, idempotent multi-step agent pipelines on your own Postgres and Redis. A library, not a platform.",
+  "description": "One Postgres. No Redis. No platform. Durable, idempotent multi-step agent pipelines as a TypeScript library, with a SKIP LOCKED job queue.",
   "license": "MIT",
   "author": "Mert Seker <meertseker@gmail.com>",
   "repository": {
@@ -21,6 +21,9 @@
     "idempotency",
     "bullmq",
     "postgres",
+    "skip-locked",
+    "no-redis",
+    "job-queue",
     "durable",
     "orchestration"
   ],
