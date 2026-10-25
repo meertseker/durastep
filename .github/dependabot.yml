@@ -8,6 +8,13 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # TypeScript 7 (the Go port) ships no compiler API; tsup's type
+      # generation needs one. Revisit when the build tool supports it.
+      - dependency-name: typescript
+        versions: [">=7"]
+      - dependency-name: tsup
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
