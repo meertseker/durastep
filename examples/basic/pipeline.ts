@@ -42,7 +42,7 @@ export const analyse = defineWorker({
     if (input.flakyOnce && ctx.attempt === 1) {
       throw new RetryableError("HTTP 503 from model provider");
     }
-    const page = ctx.upstream["fetch"] as { text: string };
+    const page = ctx.upstream.fetch as { text: string };
     ctx.reportCost({ usdCents: 2, tokens: 900 });
     return { lens: input.lens, words: page.text.split(" ").length };
   },
