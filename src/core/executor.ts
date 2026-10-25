@@ -35,7 +35,7 @@ import {
   toTaxonomyError,
 } from "./errors";
 import { errorMessage, type Logger } from "./logger";
-import { RETRY_PENDING_PREFIX } from "./orchestrator";
+import { isRetryPending, RETRY_PENDING_PREFIX } from "./orchestrator";
 import { counterKeys, type QuotaPolicy } from "./quota";
 import type { Registry } from "./registry";
 import type {
@@ -131,7 +131,10 @@ export async function executeRun(
     return { runId, outcome: "missing" };
   }
 
-  const retrying = run.status === "FAILED" && options.isRetry === true;
+  // A FAILED run is re-executed on an explicit retry, or when it carries the
+  // retry-pending marker (the process died after marking it, and the queue
+  // re-delivered the job without counting a failed attempt).
+  const retrying = run.status === "FAILED" && (options.isRetry === true || isRetryPending(run));
   if (!retrying && run.status !== "PENDING" && run.status !== "RUNNING") {
     logger.warn("durastep.execute.not_runnable", { runId, status: run.status });
     return { runId, outcome: "not_runnable", status: run.status };

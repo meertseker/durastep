@@ -245,3 +245,75 @@ describe("recovery", () => {
     expect((await runtime.getSession(session.id))?.status).toBe("FAILED");
   });
 });
+
+describe("crash recovery", () => {
+  const twoStep = () =>
+    defineChain(registry, [
+      { stepId: "a", worker: "join" },
+      { stepId: "b", worker: "join", dependsOn: ["a"] },
+    ]);
+  const later = (minutes: number) => new Date(Date.now() + minutes * 60_000);
+
+  it("adopts the orphan run of an advance that died before persisting its plan", async () => {
+    const runtime = make();
+    const s = await store.createSession({
+      tenantId: "t1",
+      subjectId: null,
+      inputs: {},
+      plan: twoStep().map((c) => ({
+        ...c,
+        dependsOn: [...c.dependsOn],
+        status: "PENDING" as const,
+      })),
+    });
+    // Simulate the dead advance: the run row exists, the plan never recorded it.
+    const dying = createRuntime({
+      store: {
+        ...store,
+        getSession: store.getSession.bind(store),
+        listRuns: store.listRuns.bind(store),
+        createRunIfAbsent: store.createRunIfAbsent.bind(store),
+        withSessionLock: store.withSessionLock.bind(store),
+        updatePlan: async () => {
+          throw new Error("process died");
+        },
+      } as unknown as MemoryStore,
+      dispatcher: new InlineDispatcher(),
+      registry,
+    });
+    await expect(dying.advance(s.id)).rejects.toThrow("process died");
+    expect(await store.listRuns({ sessionId: s.id })).toHaveLength(1);
+
+    const res = await runtime.recoverStuckSessions({ now: later(5) });
+    expect(res.sessionIds).toEqual([s.id]);
+    expect((await runtime.getSession(s.id))?.status).toBe("COMPLETED");
+    expect(await store.listRuns({ sessionId: s.id })).toHaveLength(2);
+  });
+
+  it("re-dispatches a PENDING run whose enqueue was lost, then fails it after maxPendingMs", async () => {
+    const inline = new InlineDispatcher();
+    let dropRuns = true;
+    const runtime = make({
+      bind: (h) => inline.bind(h),
+      enqueueRun: async (id) => {
+        if (!dropRuns) await inline.enqueueRun(id);
+      },
+      enqueueAdvance: (id) => inline.enqueueAdvance(id),
+    });
+    const session = await runtime.startSession(twoStep(), { tenantId: "t1" });
+    expect(session.status).toBe("EXECUTING");
+
+    dropRuns = false;
+    const res = await runtime.expireStuckRuns({ now: later(4) });
+    expect(res).toMatchObject({ expired: 0 });
+    expect(res.redispatched).toHaveLength(1);
+    expect((await runtime.getSession(session.id))?.status).toBe("COMPLETED");
+
+    // A run that stays undeliverable is eventually failed.
+    dropRuns = true;
+    const stuck = await runtime.startSession(twoStep(), { tenantId: "t2" });
+    const giveUp = await runtime.expireStuckRuns({ now: later(45) });
+    expect(giveUp.expired).toBe(1);
+    expect((await runtime.getSession(stuck.id))?.status).toBe("FAILED");
+  });
+});
